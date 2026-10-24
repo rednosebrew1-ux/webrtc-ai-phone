@@ -1,0 +1,14 @@
+services:
+  ai-phone:
+    build: .
+    env_file: .env
+    # WebRTC audio uses random UDP ports, so the container shares the host's network.
+    # (Docker Desktop on Mac/Windows: turn on "host networking" in Settings → Resources → Network,
+    #  or run without Docker — see README.)
+    network_mode: host
+    volumes:
+      - ai-phone-data:/data   # downloaded speech models live here
+    restart: unless-stopped
+
+volumes:
+  ai-phone-data:
