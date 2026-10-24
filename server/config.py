@@ -6,9 +6,13 @@ from dataclasses import dataclass, field
 
 
 def load_dotenv(path=".env"):
-    """Load KEY=VALUE lines from .env without overriding real environment variables."""
+    """Load KEY=VALUE lines from .env without overriding real environment variables.
+
+    If a key appears more than once, the last line wins (like other dotenv tools).
+    """
     if not os.path.exists(path):
         return
+    values = {}
     with open(path) as f:
         for line in f:
             line = line.strip()
@@ -18,7 +22,9 @@ def load_dotenv(path=".env"):
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
-            os.environ.setdefault(key.strip(), value)
+            values[key.strip()] = value
+    for key, value in values.items():
+        os.environ.setdefault(key, value)
 
 
 def _env(name, default=""):

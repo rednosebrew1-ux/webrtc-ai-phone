@@ -32,6 +32,8 @@ def main():
     if not settings.api_token:
         log.warning("API_TOKEN is not set: the ring API only works from a logged-in browser.")
 
+    log.info("AI brain: %s (model %s, %s)", settings.llm_url, settings.llm_model,
+             "with API key" if settings.llm_api_key else "no API key")
     stt, tts = make_stt(settings), make_tts(settings)
     app = PhoneApp(settings, stt, tts).build()
     log.info("Open http://%s:%s", "localhost" if settings.host == "0.0.0.0" else settings.host, settings.port)
