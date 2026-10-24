@@ -100,10 +100,21 @@ OpenClaw skills folder and set `AI_PHONE_URL` and `AI_PHONE_TOKEN` for the agent
 
 ### Using OpenClaw as the brain
 
-Enable the OpenClaw Gateway's OpenAI-compatible chat completions endpoint, then set
-`LLM_URL=http://127.0.0.1:18789/v1/chat/completions`, `LLM_MODEL=openclaw` and `LLM_API_KEY=<gateway token>`.
-Check the OpenClaw docs for the exact setting name. Each call is sent with a stable `user` id so the
-agent can keep context within the call.
+1. Turn on the Gateway's OpenAI-compatible endpoint (it's off by default) in `~/.openclaw/openclaw.json`:
+   ```json5
+   { gateway: { http: { endpoints: { chatCompletions: { enabled: true } } } } }
+   ```
+   then restart the Gateway.
+2. In `.env`:
+   ```
+   LLM_URL=http://127.0.0.1:18789/v1/chat/completions
+   LLM_MODEL=openclaw:main
+   LLM_API_KEY=<your gateway token>
+   ```
+   `main` is the agent id. The token is `gateway.auth.token` (or `OPENCLAW_GATEWAY_TOKEN`).
+
+Each call is sent with a stable `user` id, so OpenClaw keeps one session per call.
+See [OpenClaw's OpenAI HTTP API docs](https://docs.openclaw.ai/gateway/openai-http-api).
 
 ## Configuration
 
