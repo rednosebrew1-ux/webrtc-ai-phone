@@ -108,10 +108,13 @@ class PhoneApp:
             while True:
                 try:
                     event = await asyncio.wait_for(q.get(), timeout=15)
-                    await resp.write(f"data: {json.dumps(event)}\n\n".encode())
                 except asyncio.TimeoutError:
                     await resp.write(b": keepalive\n\n")
-        except (ConnectionResetError, asyncio.CancelledError):
+                    continue
+                if event is None:  # server shutting down
+                    break
+                await resp.write(f"data: {json.dumps(event)}\n\n".encode())
+        except ConnectionResetError:
             pass
         finally:
             self.listeners.discard(q)
@@ -221,6 +224,9 @@ class PhoneApp:
         return web.json_response({"ok": True, "calls": len(self.calls), "listeners": len(self.listeners)})
 
     async def on_shutdown(self, app):
+        # Close open event streams so Ctrl+C doesn't wait for browser tabs to disconnect.
+        for q in list(self.listeners):
+            q.put_nowait(None)
         for session in list(self.calls):
             await session.end("server")
 
