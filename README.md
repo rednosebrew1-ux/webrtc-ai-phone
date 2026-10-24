@@ -133,7 +133,9 @@ Everything is set with environment variables or `.env`. See [`.env.example`](.en
 | `AI_NAME` / `GREETING` | `Assistant` | Shown on screen / said when the AI answers. |
 | `AI_ANSWER_DELAY` | `4` | Seconds your call rings before the AI picks up. |
 | `RING_TIMEOUT` | `30` | Seconds the AI's call rings before it's missed. |
-| `VAD_MIN_RMS` | `300` | Mic level counted as speech. Raise it if background noise triggers replies. |
+| `VAD_BACKEND` | `silero` | `silero` uses a small speech model (bundled with faster-whisper) that ignores noise. `energy` uses loudness only. |
+| `VAD_THRESHOLD` | `0.5` | How sure the speech model must be. Raise it if noise still triggers replies. |
+| `VAD_MIN_RMS` | `150` | Mic level needed to interrupt the AI. Raise it if echo of the AI cuts it off. |
 | `SILENCE_MS` | `700` | Pause that ends your turn. |
 | `BARGE_IN_MS` | `300` | How long you must talk over the AI to interrupt it. |
 | `ICE_SERVERS` | Google STUN | Comma-separated STUN/TURN URLs. |
@@ -147,7 +149,7 @@ the call hangs up after it finishes speaking.
   Incoming rings arrive over Server-Sent Events, and call events (answered, transcript, hang-up) over a WebRTC data channel.
 - `server/app.py`: aiohttp server for login, WebRTC signaling (via [aiortc](https://github.com/aiortc/aiortc))
   and the ring API.
-- `server/call.py`: per-call loop. Energy-based voice detection, then speech-to-text, then the LLM streamed
+- `server/call.py`: per-call loop. Speech detection (Silero VAD), then speech-to-text, then the LLM streamed
   sentence-by-sentence, then text-to-speech, so the AI starts talking before the whole reply is generated.
 - `server/speech.py`: pluggable STT/TTS backends.
 

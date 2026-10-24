@@ -17,11 +17,14 @@ class FakeSTT:
 
 
 class FakeTTS:
-    """Speaks a 440 Hz tone, 60 ms per character (capped at 1.5 s)."""
+    """Speaks a 440 Hz tone, 60 ms per character (capped at max_seconds)."""
+
+    def __init__(self, max_seconds=1.5):
+        self.max_seconds = max_seconds
 
     async def synthesize(self, text):
         rate = 16000
-        seconds = min(1.5, 0.06 * len(text))
+        seconds = min(self.max_seconds, 0.06 * len(text))
         t = np.arange(int(rate * seconds)) / rate
         return (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16).tobytes(), rate
 

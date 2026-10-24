@@ -194,7 +194,7 @@ function onCallEvent(ev) {
       addLine(ev.role, ev.text, ev.append);
       break;
     case "interrupted":
-      if (state.lastAiLine) state.lastAiLine.textContent += " —";
+      if (ev.spoken && state.lastAiLine) state.lastAiLine.textContent += " —";
       break;
     case "hangup":
       endCall(ev.by === "ai" ? `${state.config.aiName} hung up` : "Call ended", true);

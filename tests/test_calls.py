@@ -6,7 +6,9 @@ Run: python -m pytest tests
 import asyncio
 import fractions
 import json
+import os
 import time
+import wave
 
 import aiohttp
 import av
@@ -15,6 +17,7 @@ from aiohttp import web
 from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 
 from server.app import PhoneApp
+from server.audio import resample_pcm
 from server.config import Settings
 from server.llm import stream_sentences
 from tests.fakes import FakeSTT, FakeTTS, fake_llm_app
@@ -23,14 +26,25 @@ TOKEN = "test-token"
 PASSWORD = "pw"
 
 
+SPEECH_WAV = os.path.join(os.path.dirname(__file__), "fixtures", "speech.wav")
+
+
+def load_speech():
+    """A real spoken sentence (espeak-ng), as 48 kHz 16-bit mono samples."""
+    with wave.open(SPEECH_WAV) as w:
+        pcm = resample_pcm(w.readframes(w.getnframes()), w.getframerate(), 48000)
+    return np.frombuffer(pcm, dtype=np.int16)
+
+
 class VoiceTrack(MediaStreamTrack):
-    """Microphone stand-in: talks (loud tone) during given time windows, silent otherwise."""
+    """Microphone stand-in: a loud tone during `talk_windows`, plus audio `clips` [(start_s, samples)]."""
 
     kind = "audio"
 
-    def __init__(self, talk_windows):
+    def __init__(self, talk_windows, clips=()):
         super().__init__()
         self.windows = talk_windows
+        self.clips = clips
         self.start = None
         self.pts = 0
 
@@ -46,6 +60,11 @@ class VoiceTrack(MediaStreamTrack):
         talking = any(a <= now < b for a, b in self.windows)
         t = (self.pts + np.arange(960)) / 48000
         samples = (np.sin(2 * np.pi * 300 * t) * (9000 if talking else 0)).astype(np.int16)
+        for start, clip in self.clips:
+            i = self.pts - int(start * 48000)
+            if 0 <= i < len(clip):
+                part = clip[i:i + 960]
+                samples[:len(part)] += part
         frame = av.AudioFrame.from_ndarray(samples.reshape(1, -1), format="s16", layout="mono")
         frame.sample_rate = 48000
         frame.pts = self.pts
@@ -53,7 +72,7 @@ class VoiceTrack(MediaStreamTrack):
         return frame
 
 
-async def start_servers():
+async def start_servers(**overrides):
     llm_requests = []
     llm_runner = web.AppRunner(fake_llm_app(llm_requests))
     await llm_runner.setup()
@@ -66,9 +85,13 @@ async def start_servers():
     cfg.llm_url = f"http://127.0.0.1:{llm_port}/v1/chat/completions"
     cfg.ice_servers = ""
     cfg.ai_answer_delay = 0.5
+    cfg.vad_backend = "energy"  # the fake voice is a tone, which the speech model rightly ignores
+    cfg.vad_min_rms = 300
     cfg.ring_timeout = 5
+    for key, value in overrides.items():
+        setattr(cfg, key, value)
     stt = FakeSTT()
-    phone = PhoneApp(cfg, stt, FakeTTS())
+    phone = PhoneApp(cfg, stt, FakeTTS(max_seconds=overrides.get("tts_max_seconds", 1.5)))
     runner = web.AppRunner(phone.build())
     await runner.setup()
     site = web.TCPSite(runner, "127.0.0.1", 0)
@@ -77,13 +100,13 @@ async def start_servers():
     return f"http://127.0.0.1:{port}", phone, stt, llm_requests, [runner, llm_runner]
 
 
-async def dial(http, base, talk_windows, ring_id=None):
+async def dial(http, base, talk_windows, ring_id=None, clips=()):
     """Place a call from a fake browser. Returns (pc, events list, received-audio counter)."""
     pc = RTCPeerConnection()
     events = []
     channel = pc.createDataChannel("events")
     channel.on("message", lambda m: events.append(json.loads(m)))
-    pc.addTrack(VoiceTrack(talk_windows))
+    pc.addTrack(VoiceTrack(talk_windows, clips))
     heard = {"loud_frames": 0}
 
     @pc.on("track")
@@ -202,6 +225,36 @@ async def _ai_calls_user():
             await r.cleanup()
 
 
+async def _barge_in_with_real_speech():
+    """Silero VAD: talking over the AI stops it; loud noise over the AI does not."""
+    base, phone, stt, llm_requests, runners = await start_servers(
+        vad_backend="silero", tts_max_seconds=8, greeting="x" * 200)
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
+            async with http.post(f"{base}/api/login", json={"password": PASSWORD}) as r:
+                assert r.status == 200
+            rng = np.random.default_rng(0)
+            noise = rng.normal(0, 4000, 48000 * 2).astype(np.int16)   # 2 s of loud static
+            speech = load_speech()
+            # Greeting plays from ~0.5 s to ~8.5 s. Noise at 1.5-3.5 s, then speech at 4.5 s.
+            pc, channel, events, heard = await dial(http, base, [], clips=[(1.5, noise), (4.5, speech)])
+            assert await wait_for(lambda: "answered" in types(events)), events
+
+            await asyncio.sleep(4.2)  # through the noise, before the speech
+            assert "interrupted" not in types(events), "noise interrupted the AI"
+            assert heard["loud_frames"] > 50, "AI should still be talking"
+
+            assert await wait_for(lambda: "interrupted" in types(events), 4), events
+            interrupted = [e for e in events if e["type"] == "interrupted"][0]
+            assert interrupted["spoken"] is True
+            assert await wait_for(lambda: any(e.get("role") == "user" for e in events), 8), events
+            assert stt.calls == 1, "noise should never have reached speech-to-text"
+            await pc.close()
+    finally:
+        for r in runners:
+            await r.cleanup()
+
+
 async def _sentences():
     async def deltas():
         for d in ["Hel", "lo there. How", " are you? I'm", " fine"]:
@@ -215,6 +268,10 @@ def test_user_calls_ai():
 
 def test_ai_calls_user():
     asyncio.run(_ai_calls_user())
+
+
+def test_barge_in_with_real_speech():
+    asyncio.run(_barge_in_with_real_speech())
 
 
 def test_sentence_splitting():

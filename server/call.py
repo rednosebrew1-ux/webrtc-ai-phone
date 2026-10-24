@@ -9,6 +9,7 @@ import numpy as np
 
 from .audio import InputResampler, SpeakerTrack
 from .llm import stream_chat, stream_sentences
+from .vad import SileroStream
 
 log = logging.getLogger(__name__)
 
@@ -26,6 +27,25 @@ def rms(pcm):
     return float(math.sqrt(np.mean(a * a)))
 
 
+class EnergyVAD:
+    """Fallback detector (VAD_BACKEND=energy): anything loud enough above the noise floor counts as speech."""
+
+    def __init__(self, cfg):
+        self.cfg = cfg
+        self.floor = cfg.vad_min_rms / cfg.vad_ratio
+
+    def __call__(self, pcm):
+        level = rms(pcm)
+        loud = level > max(self.cfg.vad_min_rms, self.floor * self.cfg.vad_ratio)
+        if not loud:
+            self.floor = 0.95 * self.floor + 0.05 * level
+        return [1.0 if loud else 0.0]
+
+
+def make_vad(cfg):
+    return EnergyVAD(cfg) if cfg.vad_backend == "energy" else SileroStream()
+
+
 class CallSession:
     def __init__(self, cfg, stt, tts, pc, call_id, reason=None, on_end=None):
         self.cfg, self.stt, self.tts, self.pc = cfg, stt, tts, pc
@@ -38,6 +58,7 @@ class CallSession:
         self.transcript = []            # [{"role": "user"|"assistant", "text": ...}]
         self.ended = False
         self._task = None               # current response task (thinking/speaking)
+        self._untranscribed = b""       # caller audio sent to STT but not transcribed yet
         self._listen_task = None
         self._ready = asyncio.Event()
 
@@ -108,47 +129,48 @@ class CallSession:
 
     async def _listen(self, track):
         resample = InputResampler(16000)
-        floor = self.cfg.vad_min_rms / self.cfg.vad_ratio
+        vad = make_vad(self.cfg)
         preroll, buf = [], bytearray()
-        in_speech, loud_ms, silence_ms = False, 0, 0
+        speech, in_speech, speech_ms, silence_ms = False, False, 0, 0
         preroll_frames = PREROLL_MS // FRAME_MS
-        peak, frames = 0.0, 0
+        peak_level, peak_prob, frames = 0.0, 0.0, 0
         try:
             while not self.ended:
                 frame = await track.recv()
                 pcm = resample(frame)
                 if not pcm:
                     continue
+                probs = vad(pcm)
+                if probs:  # Silero steps are 32 ms, frames are 20 ms: keep the latest verdict
+                    speech = max(probs) >= self.cfg.vad_threshold
                 level = rms(pcm)
-                threshold = max(self.cfg.vad_min_rms, floor * self.cfg.vad_ratio)
-                # Once a second, log the loudest level heard (LOG_LEVEL=DEBUG) to help tune VAD_MIN_RMS.
-                peak, frames = max(peak, level), frames + 1
+                # Once a second, log levels (LOG_LEVEL=DEBUG) to help tune VAD settings.
+                peak_level, frames = max(peak_level, level), frames + 1
+                peak_prob = max([peak_prob] + probs)
                 if frames == 50:
-                    log.debug("[%s] mic peak %.0f, threshold %.0f", self.call_id, peak, threshold)
-                    peak, frames = 0.0, 0
-                loud = level > threshold
+                    log.debug("[%s] mic peak level %.0f, peak speech probability %.2f",
+                              self.call_id, peak_level, peak_prob)
+                    peak_level, peak_prob, frames = 0.0, 0.0, 0
                 busy = self._task is not None and not self._task.done()
 
                 if not in_speech:
-                    if not loud:
-                        floor = 0.95 * floor + 0.05 * level
                     preroll.append(pcm)
                     del preroll[:-preroll_frames]
-                    loud_ms = loud_ms + FRAME_MS if loud else 0
-                    # While the AI talks, require longer speech before interrupting it.
-                    needed = self.cfg.barge_in_ms if busy else START_MS
-                    if loud_ms >= needed:
-                        if busy:
-                            self._interrupt()
+                    # While the AI is thinking or talking, interrupting takes longer, louder speech,
+                    # so leftover echo of its own voice doesn't cut it off.
+                    counts = speech and (not busy or level >= self.cfg.vad_min_rms)
+                    speech_ms = speech_ms + FRAME_MS if counts else 0
+                    if speech_ms >= (self.cfg.barge_in_ms if busy else START_MS):
+                        unheard = self._interrupt() if busy else b""
                         in_speech, silence_ms = True, 0
-                        buf = bytearray(b"".join(preroll))
+                        buf = bytearray(unheard + b"".join(preroll))
                         self.send(type="state", state="hearing")
                     continue
 
                 buf += pcm
-                silence_ms = 0 if loud else silence_ms + FRAME_MS
+                silence_ms = 0 if speech else silence_ms + FRAME_MS
                 if silence_ms >= self.cfg.silence_ms or len(buf) >= MAX_UTTERANCE_S * 32000:
-                    in_speech, loud_ms = False, 0
+                    in_speech, speech_ms = False, 0
                     utterance, buf = bytes(buf), bytearray()
                     self._task = asyncio.ensure_future(self._respond(utterance))
         except asyncio.CancelledError:
@@ -158,11 +180,15 @@ class CallSession:
             await self.end("network")
 
     def _interrupt(self):
-        log.info("[%s] caller interrupted", self.call_id)
+        """Stop the current reply. Returns audio the caller said that was never transcribed."""
+        spoken = self.speaker.playing
+        log.info("[%s] caller interrupted%s", self.call_id, "" if spoken else " (before the reply started)")
         self.speaker.clear()
+        unheard, self._untranscribed = self._untranscribed, b""
         if self._task and not self._task.done():
             self._task.cancel()
-        self.send(type="interrupted")
+        self.send(type="interrupted", spoken=spoken)
+        return unheard
 
     # ---- responding ----
 
@@ -175,7 +201,10 @@ class CallSession:
 
     async def _respond(self, utterance):
         self.send(type="state", state="thinking")
+        # If the caller keeps talking before this is transcribed, it gets merged into their next turn.
+        self._untranscribed = utterance
         text = await self.stt.transcribe(utterance)
+        self._untranscribed = b""
         if not text:
             self.send(type="state", state="listening")
             return

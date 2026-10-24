@@ -84,8 +84,11 @@ class Settings:
     ai_answer_delay: float = field(default_factory=lambda: _float("AI_ANSWER_DELAY", "4"))
     ring_timeout: float = field(default_factory=lambda: _float("RING_TIMEOUT", "30"))
 
-    # Voice activity detection
-    vad_min_rms: float = field(default_factory=lambda: _float("VAD_MIN_RMS", "300"))
+    # Voice activity detection: "silero" (speech model bundled with faster-whisper) or "energy" (loudness).
+    vad_backend: str = field(default_factory=lambda: _env("VAD_BACKEND", "silero"))
+    vad_threshold: float = field(default_factory=lambda: _float("VAD_THRESHOLD", "0.5"))
+    # Minimum mic level to interrupt the AI (and, for the energy backend, to count as speech).
+    vad_min_rms: float = field(default_factory=lambda: _float("VAD_MIN_RMS", "150"))
     vad_ratio: float = field(default_factory=lambda: _float("VAD_RATIO", "3"))
     silence_ms: float = field(default_factory=lambda: _float("SILENCE_MS", "700"))
     barge_in_ms: float = field(default_factory=lambda: _float("BARGE_IN_MS", "300"))
