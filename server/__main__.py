@@ -10,7 +10,19 @@ from .config import settings
 from .speech import make_stt, make_tts
 
 
+def use_certifi_if_needed():
+    """python.org builds of Python on macOS ship without CA certificates; fall back to certifi's bundle."""
+    if os.environ.get("SSL_CERT_FILE"):
+        return
+    try:
+        import certifi
+    except ImportError:
+        return
+    os.environ["SSL_CERT_FILE"] = certifi.where()
+
+
 def main():
+    use_certifi_if_needed()
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     log = logging.getLogger("server")
