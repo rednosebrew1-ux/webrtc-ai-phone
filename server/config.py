@@ -62,6 +62,11 @@ class Settings:
         "reply with <hangup/>.",
     ))
 
+    # When the LLM is slow: say a filler after FILLER_DELAY seconds (0 = never), give up after LLM_TIMEOUT.
+    filler_delay: float = field(default_factory=lambda: _float("FILLER_DELAY", "2.5"))
+    fillers: str = field(default_factory=lambda: _env("FILLERS", "One sec.|Hmm, let me think.|Give me a moment."))
+    llm_timeout: float = field(default_factory=lambda: _float("LLM_TIMEOUT", "30"))
+
     # Speech-to-text: "faster-whisper" (local) or "openai" (any compatible /v1/audio/transcriptions).
     stt_backend: str = field(default_factory=lambda: _env("STT_BACKEND", "faster-whisper"))
     whisper_model: str = field(default_factory=lambda: _env("WHISPER_MODEL", "base.en"))

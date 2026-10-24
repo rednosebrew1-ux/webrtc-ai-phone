@@ -1,5 +1,6 @@
 """Stand-ins for STT, TTS and the LLM, so the call flow can be tested without models."""
 
+import asyncio
 import json
 
 import numpy as np
@@ -29,12 +30,22 @@ class FakeTTS:
         return (np.sin(2 * np.pi * 440 * t) * 8000).astype(np.int16).tobytes(), rate
 
 
-def fake_llm_app(requests):
-    """An OpenAI-compatible streaming endpoint. Appends each request body to `requests`."""
+def fake_llm_app(requests, behavior=None):
+    """An OpenAI-compatible streaming endpoint. Appends each request body to `requests`.
+
+    `behavior` (a dict you can change between calls) simulates trouble:
+      delay: seconds to wait before answering
+      status: HTTP status to fail with (e.g. 429)
+      stream_error: error message sent inside the stream (as OpenClaw does for upstream failures)
+    """
+    behavior = behavior if behavior is not None else {}
 
     async def chat(request):
         body = await request.json()
         requests.append(body)
+        await asyncio.sleep(behavior.get("delay", 0))
+        if behavior.get("status"):
+            return web.json_response({"error": {"message": "nope"}}, status=behavior["status"])
         last = body["messages"][-1]["content"]
         if "picked up" in last:
             reply = "Hi, it's your assistant. I'm calling because the build finished. Talk soon! <hangup/>"
@@ -42,6 +53,9 @@ def fake_llm_app(requests):
             reply = "Got it. Anything else?"
         resp = web.StreamResponse(headers={"Content-Type": "text/event-stream"})
         await resp.prepare(request)
+        if behavior.get("stream_error"):
+            await resp.write(f"data: {json.dumps({'error': {'message': behavior['stream_error']}})}\n\n".encode())
+            return resp
         for word in reply.split(" "):
             chunk = {"choices": [{"delta": {"content": word + " "}}]}
             await resp.write(f"data: {json.dumps(chunk)}\n\n".encode())

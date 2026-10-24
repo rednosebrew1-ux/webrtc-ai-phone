@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 from .audio import InputResampler, SpeakerTrack
-from .llm import stream_chat, stream_sentences
+from .llm import LLMError, stream_chat, stream_sentences
 from .vad import SileroStream
 
 log = logging.getLogger(__name__)
@@ -18,6 +18,23 @@ START_MS = 60          # sustained speech needed to count as talking
 PREROLL_MS = 300       # audio kept from just before speech starts
 MAX_UTTERANCE_S = 30
 HANGUP_TAG = "<hangup/>"
+
+
+def friendly_error(e):
+    """What the AI says out loud when its brain fails. Details go to the server log."""
+    text = str(e).lower()
+    status = getattr(e, "status", None)
+    if isinstance(e, asyncio.TimeoutError):
+        return "Sorry, my brain is taking too long to answer. Try me again in a minute."
+    if status == 429 or "rate limit" in text or "slow down" in text or "too many requests" in text:
+        return "My brain is being rate limited right now. Give it a minute and try again."
+    if status in (401, 403):
+        return "I can't log in to my brain. Check the API key in the settings."
+    if status == 404 or "not found" in text or "unknown agent" in text:
+        return "My brain's address or model name looks wrong. Check the settings."
+    if isinstance(e, (OSError, ConnectionError)) or "cannot connect" in text:
+        return "I can't reach my brain right now. Is it running?"
+    return "Sorry, I'm having trouble thinking right now."
 
 
 def rms(pcm):
@@ -233,31 +250,66 @@ class CallSession:
 
     async def _speak_llm(self):
         spoken, hang_up = [], False
+        deltas = stream_chat(self.cfg, self._messages(), user=f"call-{self.call_id}")
+        sentences = stream_sentences(deltas)
         try:
-            deltas = stream_chat(self.cfg, self._messages(), user=f"call-{self.call_id}")
-            async for sentence in stream_sentences(deltas):
-                if HANGUP_TAG in sentence:
-                    hang_up = True
-                    sentence = sentence.replace(HANGUP_TAG, "").strip()
-                if not sentence:
-                    continue
-                spoken.append(sentence)
-                self.send(type="transcript", role="assistant", text=sentence, append=len(spoken) > 1)
-                await self._speak(sentence)
+            first = await self._first_sentence(sentences)
+            if first is not None:
+                pending = [first]
+                while pending:
+                    sentence = pending.pop()
+                    if HANGUP_TAG in sentence:
+                        hang_up = True
+                        sentence = sentence.replace(HANGUP_TAG, "").strip()
+                    if sentence:
+                        spoken.append(sentence)
+                        self.send(type="transcript", role="assistant", text=sentence, append=len(spoken) > 1)
+                        await self._speak(sentence)
+                    try:
+                        pending.append(await sentences.__anext__())
+                    except StopAsyncIteration:
+                        pass
         except asyncio.CancelledError:
             if spoken:
                 self._remember(" ".join(spoken) + " —")
             raise
-        except Exception as e:
+        except (Exception, asyncio.TimeoutError) as e:
             log.error("[%s] LLM/TTS error: %r", self.call_id, e)
-            fallback = "Sorry, I'm having trouble thinking right now."
-            spoken.append(fallback)
-            self.send(type="transcript", role="assistant", text=fallback, append=len(spoken) > 1)
-            await self._speak(fallback)
+            message = friendly_error(e)
+            spoken.append(message)
+            self.send(type="transcript", role="assistant", text=message, append=len(spoken) > 1, error=True)
+            await self._speak(message)
+        finally:
+            await sentences.aclose()
+            await deltas.aclose()  # closes the HTTP connection to the LLM
         self._remember(" ".join(spoken))
         await self._finish_turn()
         if hang_up:
             await self.end("ai")
+
+    async def _first_sentence(self, sentences):
+        """Wait for the reply to start. Says a filler if it's slow; gives up after LLM_TIMEOUT."""
+        first = asyncio.ensure_future(sentences.__anext__())
+        try:
+            use_filler = 0 < self.cfg.filler_delay < self.cfg.llm_timeout
+            done = (await asyncio.wait({first}, timeout=self.cfg.filler_delay))[0] if use_filler else {first}
+            if not done:
+                fillers = [f.strip() for f in self.cfg.fillers.split("|") if f.strip()]
+                if fillers:
+                    self._filler_index = (getattr(self, "_filler_index", -1) + 1) % len(fillers)
+                    filler = fillers[self._filler_index]
+                    log.info("[%s] reply is slow, saying filler: %s", self.call_id, filler)
+                    self.send(type="filler", text=filler)
+                    await self._speak(filler)
+            remaining = self.cfg.llm_timeout - (self.cfg.filler_delay if use_filler else 0)
+            return await asyncio.wait_for(asyncio.shield(first), remaining)
+        except StopAsyncIteration:
+            return None  # empty reply
+        finally:
+            if not first.done():
+                first.cancel()
+                # Let the cancelled read finish before the stream is closed.
+                await asyncio.gather(first, return_exceptions=True)
 
     def _remember(self, text):
         if text:

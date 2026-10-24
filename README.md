@@ -125,6 +125,8 @@ Everything is set with environment variables or `.env`. See [`.env.example`](.en
 | `APP_PASSWORD` | *(none)* | Password for the web page. **Set this** before exposing the server. |
 | `API_TOKEN` | *(none)* | Bearer token for the ring API. |
 | `LLM_URL` / `LLM_MODEL` / `LLM_API_KEY` | Ollama, `llama3.2` | Any OpenAI-compatible chat completions endpoint. |
+| `FILLER_DELAY` / `FILLERS` | `2.5` / `One sec.\|…` | Say a filler when the AI is slow to start answering (`0` turns it off). |
+| `LLM_TIMEOUT` | `30` | Give up after this many seconds and tell the caller. |
 | `SYSTEM_PROMPT` | friendly assistant | Personality and rules. Keep "short spoken sentences" in it. |
 | `STT_BACKEND` | `faster-whisper` | `faster-whisper` (local) or `openai` (any compatible API). |
 | `WHISPER_MODEL` | `base.en` | `tiny.en` is fastest, `small.en` is more accurate. |
@@ -139,6 +141,9 @@ Everything is set with environment variables or `.env`. See [`.env.example`](.en
 | `SILENCE_MS` | `700` | Pause that ends your turn. |
 | `BARGE_IN_MS` | `300` | How long you must talk over the AI to interrupt it. |
 | `ICE_SERVERS` | Google STUN | Comma-separated STUN/TURN URLs. |
+
+If the AI fails, the caller hears why in plain words (rate limited, wrong API key, wrong model name,
+not running, too slow), and the details go to the server log.
 
 The AI can end a call itself: when it ends a reply with `<hangup/>` (the default prompt tells it how),
 the call hangs up after it finishes speaking.

@@ -72,9 +72,9 @@ class VoiceTrack(MediaStreamTrack):
         return frame
 
 
-async def start_servers(**overrides):
+async def start_servers(llm_behavior=None, **overrides):
     llm_requests = []
-    llm_runner = web.AppRunner(fake_llm_app(llm_requests))
+    llm_runner = web.AppRunner(fake_llm_app(llm_requests, llm_behavior))
     await llm_runner.setup()
     llm_site = web.TCPSite(llm_runner, "127.0.0.1", 0)
     await llm_site.start()
@@ -255,6 +255,27 @@ async def _barge_in_with_real_speech():
             await r.cleanup()
 
 
+async def _one_turn(llm_behavior=None, **overrides):
+    """Call the AI, say one thing, and return the call's events after the reply."""
+    base, phone, stt, llm_requests, runners = await start_servers(llm_behavior, **overrides)
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
+            async with http.post(f"{base}/api/login", json={"password": PASSWORD}) as r:
+                assert r.status == 200
+            pc, channel, events, heard = await dial(http, base, [(2.0, 2.6)])
+            replied = lambda: sum(e.get("role") == "assistant" for e in events) >= 2
+            assert await wait_for(replied, 15), events
+            await pc.close()
+            return events
+    finally:
+        for r in runners:
+            await r.cleanup()
+
+
+def ai_lines(events):
+    return [e["text"] for e in events if e.get("role") == "assistant"]
+
+
 async def _sentences():
     async def deltas():
         for d in ["Hel", "lo there. How", " are you? I'm", " fine"]:
@@ -272,6 +293,43 @@ def test_ai_calls_user():
 
 def test_barge_in_with_real_speech():
     asyncio.run(_barge_in_with_real_speech())
+
+
+def test_slow_reply_says_filler_first():
+    events = asyncio.run(_one_turn({"delay": 1.5}, filler_delay=0.5, fillers="One sec."))
+    assert types(events).index("filler") < max(i for i, e in enumerate(events) if e.get("role") == "assistant")
+    assert "Got it." in ai_lines(events)
+
+
+def test_fast_reply_has_no_filler():
+    events = asyncio.run(_one_turn({}, filler_delay=1.0))
+    assert "filler" not in types(events)
+
+
+def test_rate_limited():
+    events = asyncio.run(_one_turn({"status": 429}))
+    assert "rate limited" in ai_lines(events)[-1]
+
+
+def test_error_inside_stream():
+    # What OpenClaw sends when its upstream model provider rate-limits it.
+    events = asyncio.run(_one_turn({"stream_error": "custom-openrouter-ai is asking us to slow down."}))
+    assert "rate limited" in ai_lines(events)[-1]
+
+
+def test_bad_api_key():
+    events = asyncio.run(_one_turn({"status": 401}))
+    assert "API key" in ai_lines(events)[-1]
+
+
+def test_llm_hangs():
+    events = asyncio.run(_one_turn({"delay": 30}, filler_delay=0, llm_timeout=1.5))
+    assert "taking too long" in ai_lines(events)[-1]
+
+
+def test_llm_not_running():
+    events = asyncio.run(_one_turn({}, llm_url="http://127.0.0.1:9/v1/chat/completions"))
+    assert "can't reach" in ai_lines(events)[-1]
 
 
 def test_sentence_splitting():
