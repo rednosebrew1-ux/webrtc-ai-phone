@@ -1,6 +1,7 @@
 """Settings, read once from environment variables. See .env.example for docs."""
 
 import os
+import re
 import secrets
 from dataclasses import dataclass, field
 
@@ -22,6 +23,8 @@ def load_dotenv(path=".env"):
             value = value.strip()
             if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
                 value = value[1:-1]
+            else:
+                value = re.split(r"\s+#", value, maxsplit=1)[0]  # strip "  # comment"
             values[key.strip()] = value
     for key, value in values.items():
         os.environ.setdefault(key, value)
