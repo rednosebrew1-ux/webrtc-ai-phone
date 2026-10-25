@@ -3,8 +3,15 @@
 # Usage: ring.sh "reason for the call"
 set -eu
 
-: "${AI_PHONE_URL:?set AI_PHONE_URL, e.g. http://localhost:8080}"
-: "${AI_PHONE_TOKEN:?set AI_PHONE_TOKEN to the app's API_TOKEN}"
+# Settings come from the environment, or from ~/.config/ai-phone/ring-me.env
+# (some agents, like OpenClaw, block secret-looking env vars from reaching skills).
+CONFIG="${AI_PHONE_CONFIG:-$HOME/.config/ai-phone/ring-me.env}"
+if [ -z "${AI_PHONE_TOKEN:-}" ] && [ -f "$CONFIG" ]; then
+  # shellcheck disable=SC1090
+  . "$CONFIG"
+fi
+AI_PHONE_URL="${AI_PHONE_URL:-http://localhost:8080}"
+: "${AI_PHONE_TOKEN:?no token: put AI_PHONE_TOKEN=... (the app's API_TOKEN) in $CONFIG}"
 REASON="${1:?usage: ring.sh \"reason for the call\"}"
 
 BODY=$(python3 -c 'import json,sys; print(json.dumps({"reason": sys.argv[1]}))' "$REASON")

@@ -97,8 +97,18 @@ When you answer, the AI opens the call by explaining the `reason`.
 
 ### OpenClaw skill
 
-[`skills/openclaw/ring-me`](skills/openclaw/ring-me) lets an OpenClaw agent phone you. Copy it into your
-OpenClaw skills folder and set `AI_PHONE_URL` and `AI_PHONE_TOKEN` for the agent.
+[`skills/openclaw/ring-me`](skills/openclaw/ring-me) lets an OpenClaw agent phone you.
+
+```bash
+openclaw skills install ./skills/openclaw/ring-me --global
+# Give the skill your API_TOKEN (copied straight from .env, never shown on screen):
+mkdir -p ~/.config/ai-phone
+grep '^API_TOKEN=' .env | sed 's/^API_TOKEN=/AI_PHONE_TOKEN=/' > ~/.config/ai-phone/ring-me.env
+chmod 600 ~/.config/ai-phone/ring-me.env
+```
+
+OpenClaw blocks secret-looking environment variables from reaching skills, so the skill reads its token
+from that file instead. Add `AI_PHONE_URL=...` to the file if the app isn't at `http://localhost:8080`.
 
 ### Using OpenClaw as the brain
 

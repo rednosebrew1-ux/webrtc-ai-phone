@@ -11,10 +11,16 @@ back when the call ends.
 
 ## Setup (once)
 
-The user must set two environment variables for the agent:
+Put the app's `API_TOKEN` in a private file the script reads:
 
-- `AI_PHONE_URL`: where the app runs, e.g. `http://localhost:8080`
-- `AI_PHONE_TOKEN`: the app's `API_TOKEN`
+```bash
+mkdir -p ~/.config/ai-phone
+printf 'AI_PHONE_TOKEN=%s\n' 'PASTE_API_TOKEN' > ~/.config/ai-phone/ring-me.env
+chmod 600 ~/.config/ai-phone/ring-me.env
+```
+
+Add `AI_PHONE_URL=http://...` to the same file if the app isn't at `http://localhost:8080`.
+(Environment variables `AI_PHONE_TOKEN` / `AI_PHONE_URL` also work, where the agent passes them through.)
 
 ## How to call
 
