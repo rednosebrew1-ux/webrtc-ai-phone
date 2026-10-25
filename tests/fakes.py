@@ -59,7 +59,9 @@ def fake_llm_app(requests, behavior=None):
         if behavior.get("status"):
             return web.json_response({"error": {"message": "nope"}}, status=behavior["status"])
         last = body["messages"][-1]["content"]
-        if "picked up" in last:
+        if behavior.get("reply"):
+            reply = behavior["reply"]
+        elif "picked up" in last:
             reply = "Hi, it's your assistant. I'm calling because the build finished. Talk soon! <hangup/>"
         else:
             reply = "Got it. Anything else?"

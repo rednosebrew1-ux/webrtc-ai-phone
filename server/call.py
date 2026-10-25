@@ -8,7 +8,7 @@ import math
 import numpy as np
 
 from .audio import InputResampler, SpeakerTrack
-from .llm import LLMError, stream_chat, stream_sentences
+from .llm import LLMError, speakable, stream_chat, stream_sentences
 from .vad import SileroStream
 
 log = logging.getLogger(__name__)
@@ -262,7 +262,7 @@ class CallSession:
     async def _speak_llm(self):
         spoken, hang_up = [], False
         deltas = stream_chat(self.cfg, self._messages(), user=f"call-{self.call_id}")
-        sentences = stream_sentences(deltas)
+        sentences = stream_sentences(speakable(deltas))
         try:
             first = await self._first_sentence(sentences)
             if first is not None:
@@ -293,6 +293,12 @@ class CallSession:
         finally:
             await sentences.aclose()
             await deltas.aclose()  # closes the HTTP connection to the LLM
+        if not spoken and not hang_up:
+            # Everything in the reply was unspeakable (e.g. a raw tool call); don't leave silence.
+            log.warning("[%s] reply had nothing speakable", self.call_id)
+            spoken.append("Sorry, I got mixed up there. Could you say that again?")
+            self.send(type="transcript", role="assistant", text=spoken[0], error=True)
+            await self._speak(spoken[0])
         self._remember(" ".join(spoken))
         await self._finish_turn()
         if hang_up:

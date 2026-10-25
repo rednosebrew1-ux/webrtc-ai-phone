@@ -62,6 +62,56 @@ async def stream_chat(cfg, messages, user=None):
                     yield delta
 
 
+async def speakable(deltas):
+    """Drop text that shouldn't be read aloud: {JSON}, ```code```, <think>…</think> and markdown symbols.
+
+    Small models sometimes write tool calls or reasoning into their reply instead of using
+    the proper channels; this keeps them from being spoken.
+    """
+    depth, in_code, in_think, ticks, pending = 0, False, False, 0, ""
+    async for delta in deltas:
+        out = []
+        text = pending + delta
+        pending = ""
+        i = 0
+        while i < len(text):
+            if in_think:
+                end = text.find("</think>", i)
+                if end == -1:
+                    pending = text[max(i, len(text) - 7):]  # keep a possible partial "</think>"
+                    break
+                in_think, i = False, end + len("</think>")
+                continue
+            ch = text[i]
+            if ch == "<" and not in_code and depth == 0:
+                if text.startswith("<think>", i):
+                    in_think, i = True, i + len("<think>")
+                    continue
+                if "<think>".startswith(text[i:]):  # might be the start of "<think>"
+                    pending = text[i:]
+                    break
+            if ch == "`":
+                ticks += 1
+                i += 1
+                continue
+            if ticks:
+                if ticks >= 3:
+                    in_code = not in_code
+                ticks = 0
+            if in_code:
+                i += 1
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}" and depth:
+                depth -= 1
+            elif depth == 0 and ch not in "*#_":
+                out.append(ch)
+            i += 1
+        if out:
+            yield "".join(out)
+
+
 async def stream_sentences(deltas):
     """Group a stream of text deltas into speakable sentences."""
     buf = ""

@@ -19,7 +19,7 @@ from aiortc import MediaStreamTrack, RTCPeerConnection, RTCSessionDescription
 from server.app import PhoneApp
 from server.audio import resample_pcm
 from server.config import Settings
-from server.llm import stream_sentences
+from server.llm import speakable, stream_sentences
 from tests.fakes import FakeSTT, FakeTTS, fake_llm_app
 
 TOKEN = "test-token"
@@ -382,6 +382,29 @@ async def _talking_while_ai_thinks():
 
 def test_talking_while_ai_thinks():
     asyncio.run(_talking_while_ai_thinks())
+
+
+async def _speakable(chunks):
+    async def deltas():
+        for c in chunks:
+            yield c
+    return "".join([s async for s in speakable(deltas())])
+
+
+def test_speakable_drops_code_json_and_thinking():
+    chunks = ["<thi", "nk>Let me reason about this.</th", "ink>Sure! Here is a call: {\"name\": ",
+              "\"memory_get\", \"args\": {\"path\": \"/x\"}} Done. ```py\nprint(1)\n``` **Bye** #now"]
+    assert " ".join(asyncio.run(_speakable(chunks)).split()) == "Sure! Here is a call: Done. Bye now"
+
+
+def test_speakable_keeps_normal_text():
+    assert asyncio.run(_speakable(["I'm your ", "assistant. 5 < 6, ok?"])) == "I'm your assistant. 5 < 6, ok?"
+
+
+def test_reply_that_is_only_a_tool_call():
+    events = asyncio.run(_one_turn({"reply": '{"name": "dispatch_action", "parameters": {"id": "memory_get"}}'}))
+    assert "say that again" in ai_lines(events)[-1]
+    assert not any("dispatch_action" in line for line in ai_lines(events))
 
 
 def test_sentence_splitting():
