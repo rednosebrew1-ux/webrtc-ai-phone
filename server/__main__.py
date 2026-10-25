@@ -26,6 +26,10 @@ def main():
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
                         format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     log = logging.getLogger("server")
+    # Connection setup chatter (ICE candidate checks) drowns out the useful lines; LOG_LEVEL=DEBUG shows it.
+    if logging.getLogger().level > logging.DEBUG:
+        for noisy in ("aioice", "aiortc", "aiohttp.access"):
+            logging.getLogger(noisy).setLevel(logging.WARNING)
     os.makedirs(settings.data_dir, exist_ok=True)
     if not settings.app_password:
         log.warning("APP_PASSWORD is not set: anyone who can reach this server can talk to your AI.")
