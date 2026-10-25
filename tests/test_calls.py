@@ -332,5 +332,54 @@ def test_llm_not_running():
     assert "can't reach" in ai_lines(events)[-1]
 
 
+async def _speech_while_ringing_is_ignored():
+    base, phone, stt, llm_requests, runners = await start_servers(ai_answer_delay=2.5)
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
+            async with http.post(f"{base}/api/login", json={"password": PASSWORD}) as r:
+                assert r.status == 200
+            # Talk at 0.5-1.2 s, while it's still ringing.
+            pc, channel, events, heard = await dial(http, base, [(0.5, 1.2)])
+            assert await wait_for(lambda: "answered" in types(events)), events
+            await asyncio.sleep(3)
+            assert stt.calls == 0 and not llm_requests, (stt.calls, llm_requests)
+            await pc.close()
+    finally:
+        for r in runners:
+            await r.cleanup()
+
+
+def test_speech_while_ringing_is_ignored():
+    asyncio.run(_speech_while_ringing_is_ignored())
+
+
+async def _talking_while_ai_thinks():
+    """Speaking again while the AI is still thinking replaces the request; quiet speech counts too."""
+    behavior = {"delay": 6}
+    base, phone, stt, llm_requests, runners = await start_servers(
+        behavior, vad_backend="silero", filler_delay=1.0, llm_timeout=20)
+    try:
+        async with aiohttp.ClientSession(cookie_jar=aiohttp.CookieJar(unsafe=True)) as http:
+            async with http.post(f"{base}/api/login", json={"password": PASSWORD}) as r:
+                assert r.status == 200
+            speech = load_speech()[:48000]                 # ~1 s
+            quiet = (speech * 0.2).astype(np.int16)        # well below VAD_MIN_RMS
+            pc, channel, events, heard = await dial(http, base, [], clips=[(2.0, speech), (5.5, quiet)])
+            assert await wait_for(lambda: sum(e.get("role") == "user" for e in events) == 2, 12), events
+            interrupted = [e for e in events if e["type"] == "interrupted"]
+            assert interrupted and interrupted[0]["spoken"] is False, events
+            assert await wait_for(lambda: len(llm_requests) == 2 and behavior["inflight"] == 0, 15)
+            assert behavior.get("abandoned") == 1, "the first request's connection wasn't closed"
+            assert behavior["max_inflight"] == 1, "two requests overlapped at the LLM"
+            await pc.close()
+    finally:
+        for r in runners:
+            await r.cleanup()
+
+
+def test_talking_while_ai_thinks():
+    asyncio.run(_talking_while_ai_thinks())
+
+
 def test_sentence_splitting():
     assert asyncio.run(_sentences()) == ["Hello there.", "How are you?", "I'm fine"]

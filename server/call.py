@@ -76,6 +76,7 @@ class CallSession:
         self.ended = False
         self._task = None               # current response task (thinking/speaking)
         self._untranscribed = b""       # caller audio sent to STT but not transcribed yet
+        self._answered = False          # mic audio is ignored while the call is still ringing
         self._listen_task = None
         self._ready = asyncio.Event()
 
@@ -117,16 +118,18 @@ class CallSession:
             return
         if self.reason:
             # The AI rang the user and they accepted: pick up right away and say why.
+            self._answered = True
             self.send(type="answered")
-            self._task = asyncio.ensure_future(self._opener())
+            self._start(self._opener())
         else:
             # The user rang the AI: let it ring a bit, like a real phone.
             self.send(type="ringing")
             await asyncio.sleep(self.cfg.ai_answer_delay)
             if self.ended:
                 return
+            self._answered = True
             self.send(type="answered")
-            self._task = asyncio.ensure_future(self._say_fixed(self.cfg.greeting))
+            self._start(self._say_fixed(self.cfg.greeting))
 
     async def end(self, by):
         if self.ended:
@@ -168,14 +171,16 @@ class CallSession:
                     log.debug("[%s] mic peak level %.0f, peak speech probability %.2f",
                               self.call_id, peak_level, peak_prob)
                     peak_level, peak_prob, frames = 0.0, 0.0, 0
+                if not self._answered:
+                    continue  # still ringing: nobody is listening yet
                 busy = self._task is not None and not self._task.done()
 
                 if not in_speech:
                     preroll.append(pcm)
                     del preroll[:-preroll_frames]
-                    # While the AI is thinking or talking, interrupting takes longer, louder speech,
-                    # so leftover echo of its own voice doesn't cut it off.
-                    counts = speech and (not busy or level >= self.cfg.vad_min_rms)
+                    # While the AI is talking, interrupting takes longer, louder speech, so leftover
+                    # echo of its own voice doesn't cut it off. While it's only thinking, any speech counts.
+                    counts = speech and (not self.speaker.playing or level >= self.cfg.vad_min_rms)
                     speech_ms = speech_ms + FRAME_MS if counts else 0
                     if speech_ms >= (self.cfg.barge_in_ms if busy else START_MS):
                         unheard = self._interrupt() if busy else b""
@@ -189,12 +194,18 @@ class CallSession:
                 if silence_ms >= self.cfg.silence_ms or len(buf) >= MAX_UTTERANCE_S * 32000:
                     in_speech, speech_ms = False, 0
                     utterance, buf = bytes(buf), bytearray()
-                    self._task = asyncio.ensure_future(self._respond(utterance))
+                    self._start(self._respond(utterance))
         except asyncio.CancelledError:
             pass
         except Exception as e:  # MediaStreamError when the peer goes away
             log.info("[%s] audio input ended: %r", self.call_id, e)
             await self.end("network")
+
+    def _start(self, coro):
+        """Start the next reply. Only one runs at a time: an unfinished one is cancelled."""
+        if self._task and not self._task.done():
+            self._task.cancel()
+        self._task = asyncio.ensure_future(coro)
 
     def _interrupt(self):
         """Stop the current reply. Returns audio the caller said that was never transcribed."""

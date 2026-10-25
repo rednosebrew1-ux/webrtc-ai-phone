@@ -43,7 +43,19 @@ def fake_llm_app(requests, behavior=None):
     async def chat(request):
         body = await request.json()
         requests.append(body)
-        await asyncio.sleep(behavior.get("delay", 0))
+        # Track requests in flight at once (a real agent may serialize or reject overlapping ones).
+        behavior["inflight"] = behavior.get("inflight", 0) + 1
+        behavior["max_inflight"] = max(behavior.get("max_inflight", 0), behavior["inflight"])
+        try:
+            # Wait out the delay, but stop as soon as the client hangs up on us.
+            end = asyncio.get_running_loop().time() + behavior.get("delay", 0)
+            while asyncio.get_running_loop().time() < end:
+                if request.transport is None or request.transport.is_closing():
+                    behavior["abandoned"] = behavior.get("abandoned", 0) + 1
+                    return web.Response(status=499)
+                await asyncio.sleep(0.02)
+        finally:
+            behavior["inflight"] -= 1
         if behavior.get("status"):
             return web.json_response({"error": {"message": "nope"}}, status=behavior["status"])
         last = body["messages"][-1]["content"]
