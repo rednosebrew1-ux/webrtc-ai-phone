@@ -44,6 +44,8 @@ cp .env.example .env        # edit it
 python -m server
 ```
 
+After the first install, `./start.sh` starts the server from any Terminal window (it uses `.venv` for you).
+
 ### A free, local brain
 
 ```bash
