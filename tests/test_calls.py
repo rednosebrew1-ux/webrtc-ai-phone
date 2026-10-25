@@ -299,6 +299,9 @@ def test_slow_reply_says_filler_first():
     events = asyncio.run(_one_turn({"delay": 1.5}, filler_delay=0.5, fillers="One sec."))
     assert types(events).index("filler") < max(i for i, e in enumerate(events) if e.get("role") == "assistant")
     assert "Got it." in ai_lines(events)
+    # After the filler is said, the screen goes back to "Thinking…" until the reply starts.
+    after_filler = [e.get("state") for e in events[types(events).index("filler"):] if e["type"] == "state"]
+    assert after_filler[:2] == ["speaking", "thinking"], after_filler
 
 
 def test_fast_reply_has_no_filler():

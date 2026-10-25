@@ -298,6 +298,12 @@ class CallSession:
         if hang_up:
             await self.end("ai")
 
+    async def _thinking_after_filler(self, first):
+        """Once the filler has been said, show "Thinking…" again while the real reply is pending."""
+        await self.speaker.wait_idle()
+        if not first.done() and not self.ended:
+            self.send(type="state", state="thinking")
+
     async def _first_sentence(self, sentences):
         """Wait for the reply to start. Says a filler if it's slow; gives up after LLM_TIMEOUT."""
         first = asyncio.ensure_future(sentences.__anext__())
@@ -312,6 +318,7 @@ class CallSession:
                     log.info("[%s] reply is slow, saying filler: %s", self.call_id, filler)
                     self.send(type="filler", text=filler)
                     await self._speak(filler)
+                    asyncio.ensure_future(self._thinking_after_filler(first))
             remaining = self.cfg.llm_timeout - (self.cfg.filler_delay if use_filler else 0)
             return await asyncio.wait_for(asyncio.shield(first), remaining)
         except StopAsyncIteration:
