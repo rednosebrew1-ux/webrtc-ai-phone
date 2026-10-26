@@ -21,6 +21,12 @@ def use_certifi_if_needed():
     os.environ["SSL_CERT_FILE"] = certifi.where()
 
 
+def _ignore_closed_transport_noise(record):
+    """Drop a harmless traceback: aioice sending a last STUN packet after a call's socket closed."""
+    exc = record.exc_info[1] if record.exc_info else None
+    return not (isinstance(exc, AttributeError) and "call_exception_handler" in str(exc))
+
+
 def main():
     use_certifi_if_needed()
     logging.basicConfig(level=os.environ.get("LOG_LEVEL", "INFO"),
@@ -30,6 +36,7 @@ def main():
     if logging.getLogger().level > logging.DEBUG:
         for noisy in ("aioice", "aiortc", "aiohttp.access"):
             logging.getLogger(noisy).setLevel(logging.WARNING)
+        logging.getLogger("asyncio").addFilter(_ignore_closed_transport_noise)
     os.makedirs(settings.data_dir, exist_ok=True)
     if not settings.app_password:
         log.warning("APP_PASSWORD is not set: anyone who can reach this server can talk to your AI.")
