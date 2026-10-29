@@ -77,6 +77,7 @@ class CallSession:
         self._task = None               # current response task (thinking/speaking)
         self._untranscribed = b""       # caller audio sent to STT but not transcribed yet
         self._answered = False          # mic audio is ignored while the call is still ringing
+        self._queued = []               # caller turns spoken while the AI was still thinking
         self._listen_task = None
         self._ready = asyncio.Event()
 
@@ -174,16 +175,22 @@ class CallSession:
                 if not self._answered:
                     continue  # still ringing: nobody is listening yet
                 busy = self._task is not None and not self._task.done()
+                talking = self.speaker.playing
+                if not busy and not in_speech and self._queued:
+                    # Speech that arrived while the AI was thinking gets its own turn next.
+                    queued, self._queued = b"".join(self._queued), []
+                    self._start(self._respond(queued))
+                    continue
 
                 if not in_speech:
                     preroll.append(pcm)
                     del preroll[:-preroll_frames]
                     # While the AI is talking, interrupting takes longer, louder speech, so leftover
-                    # echo of its own voice doesn't cut it off. While it's only thinking, any speech counts.
-                    counts = speech and (not self.speaker.playing or level >= self.cfg.vad_min_rms)
+                    # echo of its own voice doesn't cut it off.
+                    counts = speech and (not talking or level >= self.cfg.vad_min_rms)
                     speech_ms = speech_ms + FRAME_MS if counts else 0
-                    if speech_ms >= (self.cfg.barge_in_ms if busy else START_MS):
-                        unheard = self._interrupt() if busy else b""
+                    if speech_ms >= (self.cfg.barge_in_ms if talking else START_MS):
+                        unheard = self._interrupt() if talking else b""
                         in_speech, silence_ms = True, 0
                         buf = bytearray(unheard + b"".join(preroll))
                         self.send(type="state", state="hearing")
@@ -194,7 +201,14 @@ class CallSession:
                 if silence_ms >= self.cfg.silence_ms or len(buf) >= MAX_UTTERANCE_S * 32000:
                     in_speech, speech_ms = False, 0
                     utterance, buf = bytes(buf), bytearray()
-                    self._start(self._respond(utterance))
+                    if self._task is not None and not self._task.done():
+                        # The AI is still working on the last turn (a slow model): don't throw that
+                        # work away. Answer this right after it.
+                        self._queued.append(utterance)
+                        self.send(type="state", state="thinking")
+                    else:
+                        utterance, self._queued = b"".join(self._queued) + utterance, []
+                        self._start(self._respond(utterance))
         except asyncio.CancelledError:
             pass
         except Exception as e:  # MediaStreamError when the peer goes away

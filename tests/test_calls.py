@@ -357,8 +357,9 @@ def test_speech_while_ringing_is_ignored():
 
 
 async def _talking_while_ai_thinks():
-    """Speaking again while the AI is still thinking replaces the request; quiet speech counts too."""
-    behavior = {"delay": 6}
+    """Speaking while the AI is still thinking doesn't throw its work away: that reply finishes,
+    then the new speech gets its own turn. Quiet speech counts too."""
+    behavior = {"delay": 4}
     base, phone, stt, llm_requests, runners = await start_servers(
         behavior, vad_backend="silero", filler_delay=1.0, llm_timeout=20)
     try:
@@ -367,12 +368,12 @@ async def _talking_while_ai_thinks():
                 assert r.status == 200
             speech = load_speech()[:48000]                 # ~1 s
             quiet = (speech * 0.2).astype(np.int16)        # well below VAD_MIN_RMS
-            pc, channel, events, heard = await dial(http, base, [], clips=[(2.0, speech), (5.5, quiet)])
-            assert await wait_for(lambda: sum(e.get("role") == "user" for e in events) == 2, 12), events
-            interrupted = [e for e in events if e["type"] == "interrupted"]
-            assert interrupted and interrupted[0]["spoken"] is False, events
-            assert await wait_for(lambda: len(llm_requests) == 2 and behavior["inflight"] == 0, 15)
-            assert behavior.get("abandoned") == 1, "the first request's connection wasn't closed"
+            pc, channel, events, heard = await dial(http, base, [], clips=[(2.0, speech), (5.0, quiet)])
+            replies = lambda: [e for e in events if e.get("text") == "Anything else?"]
+            assert await wait_for(lambda: len(replies()) == 2, 25), events
+            assert sum(e.get("role") == "user" for e in events) == 2, events
+            assert "interrupted" not in types(events), events
+            assert len(llm_requests) == 2 and not behavior.get("abandoned"), behavior
             assert behavior["max_inflight"] == 1, "two requests overlapped at the LLM"
             await pc.close()
     finally:
