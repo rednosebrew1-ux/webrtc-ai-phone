@@ -11,7 +11,7 @@ if [ -z "${AI_PHONE_TOKEN:-}" ] && [ -f "$CONFIG" ]; then
   . "$CONFIG"
 fi
 AI_PHONE_URL="${AI_PHONE_URL:-http://localhost:8080}"
-: "${AI_PHONE_TOKEN:?no token: put AI_PHONE_TOKEN=... (the app's API_TOKEN) in $CONFIG}"
+: "${AI_PHONE_TOKEN:?no token: put AI_PHONE_TOKEN=... (the app API_TOKEN) in $CONFIG}"
 REASON="${1:?usage: ring.sh \"reason for the call\"}"
 
 BODY=$(python3 -c 'import json,sys; print(json.dumps({"reason": sys.argv[1]}))' "$REASON")
